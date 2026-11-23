@@ -1,6 +1,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "taixia.h"
+#include <cstdio>
 
 namespace esphome {
 namespace taixia {
@@ -17,6 +18,14 @@ static const size_t RX_BUFFER_MAX = 512;
 // If a frame stays incomplete for this long, treat it as truncated and
 // resynchronise rather than waiting for bytes that will never arrive.
 static const uint32_t RX_STALE_MS = 250;
+
+namespace {
+std::string byte_to_hex_str_(uint8_t value) {
+  char buf[4];
+  std::snprintf(buf, sizeof(buf), "%02x", value);
+  return std::string(buf);
+}
+}  // namespace
 
   void TaiXia::dump_config() {
     ESP_LOGCONFIG(TAG, "TaiXIA:");
@@ -78,7 +87,7 @@ static const uint32_t RX_STALE_MS = 250;
     if ((this->buffer_[0] >= 0x0) && (this->buffer_[1] == 0x0) && (this->buffer_[2] == SERVICE_ID_READ_VERSION)) {
       if (this->version_textsensor_ != nullptr) {
         std::string version;
-        version = format_hex_pretty(this->buffer_[3]) + "." + format_hex_pretty(this->buffer_[4]);
+        version = byte_to_hex_str_(this->buffer_[3]) + "." + byte_to_hex_str_(this->buffer_[4]);
         this->version_textsensor_->publish_state(version);
       }
     }
@@ -93,7 +102,7 @@ static const uint32_t RX_STALE_MS = 250;
     if ((this->buffer_[0] >= 0x0) && (this->buffer_[1] == 0x0) && (this->buffer_[2] == SERVICE_ID_READ_SA_ID)) {
       if (this->sa_id_textsensor_ != nullptr) {
         std::string sa_id;
-        sa_id = format_hex_pretty(this->buffer_[3]) + format_hex_pretty(this->buffer_[4]);
+        sa_id = byte_to_hex_str_(this->buffer_[3]) + byte_to_hex_str_(this->buffer_[4]);
         this->sa_id_textsensor_->publish_state(sa_id);
       }
       // if not preset sa_id
@@ -112,7 +121,7 @@ static const uint32_t RX_STALE_MS = 250;
       std::string brand;
       for (i = 3; i < this->buffer_[0]; i++) {
         if (this->buffer_[i] != 0x0) {
-          brand = brand + str_sprintf("%c", this->buffer_[i]);
+          brand += static_cast<char>(this->buffer_[i]);
         } else {
           break;
         }
@@ -133,7 +142,7 @@ static const uint32_t RX_STALE_MS = 250;
       std::string model;
       for (i = 3; i < this->buffer_[0]; i++) {
         if (this->buffer_[i] != 0x0) {
-          model = model + str_sprintf("%c", this->buffer_[i]);
+          model += static_cast<char>(this->buffer_[i]);
         } else {
           break;
         }
@@ -171,7 +180,7 @@ static const uint32_t RX_STALE_MS = 250;
         start = 3;
 
       for (i = start; i < this->buffer_[0]; i++) {
-        services = services + format_hex_pretty(this->buffer_[i]) + " ";
+        services = services + byte_to_hex_str_(this->buffer_[i]) + " ";
       }
       if (this->services_textsensor_ != nullptr) {
         this->services_textsensor_->publish_state(services);
@@ -195,7 +204,7 @@ static const uint32_t RX_STALE_MS = 250;
       std::string brand;
       for (i = 8; i < this->buffer_[0]; i++) {
         if (this->buffer_[i] != 0x0) {
-          brand = brand + str_sprintf("%c", this->buffer_[i]);
+          brand += static_cast<char>(this->buffer_[i]);
         } else {
           break;
         }
@@ -204,7 +213,7 @@ static const uint32_t RX_STALE_MS = 250;
       std::string model;
       for (j = i + 1; j < this->buffer_[0]; j++) {
         if (this->buffer_[j] != 0x0) {
-          model = model + str_sprintf("%c", this->buffer_[j]);
+          model += static_cast<char>(this->buffer_[j]);
         } else {
           break;
         }
@@ -212,12 +221,12 @@ static const uint32_t RX_STALE_MS = 250;
 
       std::string services;
       for (k = j + 1; k < this->buffer_[0]; k++) {
-        services = services + format_hex_pretty(this->buffer_[k]) + " ";
+        services = services + byte_to_hex_str_(this->buffer_[k]) + " ";
       }
 
       if (this->sa_id_textsensor_ != nullptr) {
         std::string sa_id;
-        sa_id = format_hex_pretty(this->buffer_[6]) + format_hex_pretty(this->buffer_[7]);
+        sa_id = byte_to_hex_str_(this->buffer_[6]) + byte_to_hex_str_(this->buffer_[7]);
         this->sa_id_textsensor_->publish_state(sa_id);
       }
       if (this->brand_textsensor_ != nullptr) {
@@ -231,7 +240,7 @@ static const uint32_t RX_STALE_MS = 250;
       }
       if (this->version_textsensor_ != nullptr) {
         std::string version;
-        version = format_hex_pretty(this->buffer_[3]) + "." + format_hex_pretty(this->buffer_[4]);
+        version = byte_to_hex_str_(this->buffer_[3]) + "." + byte_to_hex_str_(this->buffer_[4]);
         this->version_textsensor_->publish_state(version);
       }
 
@@ -434,20 +443,6 @@ static const uint32_t RX_STALE_MS = 250;
       }
   }
 
-  // Non-blocking receiver.
-  //
-  // The previous implementation called readline() in a loop, which used
-  // read_array() to wait for a whole frame to arrive. A full status response is
-  // 115 bytes; at 9600 baud that takes ~120ms, but read_array()'s timeout is
-  // hard-coded to 100ms and consumes nothing when it expires. Every poll
-  // therefore blocked the main loop for seconds and left the stream misaligned,
-  // so the next iteration read a byte from the middle of a frame and mistook it
-  // for a length. With only a 1-byte XOR checksum, roughly 1 in 256 of those
-  // misaligned frames passed validation and fed garbage to the listeners.
-  //
-  // Instead, drain whatever the UART already holds, then parse only complete
-  // frames. An incomplete frame is left for the next loop() call rather than
-  // waited on, so this never blocks.
   void TaiXia::loop() {
     const uint32_t now = millis();
     uint8_t c;
